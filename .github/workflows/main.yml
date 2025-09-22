@@ -3,8 +3,12 @@ name: Change App Icon
 on:
   workflow_dispatch:
     inputs:
-      dropbox_url:
-        description: "Direct Dropbox URL to your zipped icon set"
+      ipa_url:
+        description: "Dropbox direct link to the IPA file (must end with ?dl=1)"
+        required: true
+        type: string
+      icon_url:
+        description: "Dropbox direct link to the new app icon (1024x1024 recommended, must end with ?dl=1)"
         required: true
         type: string
 
@@ -13,23 +17,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # Unzip original IPA
-      - name: Unzip IPA
+      # Download IPA
+      - name: Download IPA
         run: |
+          curl -L "${{ github.event.inputs.ipa_url }}" -o App.ipa
           mkdir extracted
           unzip App.ipa -d extracted
 
-      # Download new icons from Dropbox
-      - name: Download icons from Dropbox
+      # Download new app icon
+      - name: Download new icon
         run: |
-          curl -L "${{ github.event.inputs.dropbox_url }}" -o icons.zip
-          unzip icons.zip -d icons
+          curl -L "${{ github.event.inputs.icon_url }}" -o newicon.png
 
-      # Replace app icons (must have same names as originals)
+      # Install ImageMagick for resizing
+      - name: Install ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
+      # Generate required iOS icon sizes
+      - name: Generate iOS icons
+        run: |
+          mkdir icons
+          convert newicon.png -resize 120x120 icons/AppIcon60x60@2x.png
+          convert newicon.png -resize 180x180 icons/AppIcon60x60@3x.png
+          convert newicon.png -resize 152x152 icons/AppIcon76x76@2x.png
+          convert newicon.png -resize 167x167 icons/AppIcon83.5x83.5@2x.png
+          convert newicon.png -resize 120x120 icons/AppIcon120.png
+          convert newicon.png -resize 76x76 icons/AppIcon76.png
+          convert newicon.png -resize 57x57 icons/AppIcon57.png
+          convert newicon.png -resize 114x114 icons/AppIcon57@2x.png
+          convert newicon.png -resize 40x40 icons/AppIcon40.png
+          convert newicon.png -resize 80x80 icons/AppIcon40@2x.png
+          convert newicon.png -resize 120x120 icons/AppIcon40@3x.png
+          # add more sizes if the app expects them
+
+      # Replace icons inside IPA bundle
       - name: Replace icons
         run: |
           cp icons/* extracted/Payload/*.app/
