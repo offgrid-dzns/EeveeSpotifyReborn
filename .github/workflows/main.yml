@@ -3,104 +3,77 @@ name: Change App Icon
 on:
   workflow_dispatch:
     inputs:
-      dropbox_folder:
-        description: "Dropbox direct link to a folder (?dl=1)"
+      dropbox_folder_url:
+        description: "Dropbox folder containing one .ipa and one .png/.jpg"
         required: true
-        type: string
 
 jobs:
   replace-icon:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v3
 
-      - name: Install dependencies
+      - name: Set up tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick jq curl
+          sudo apt-get install -y imagemagick unzip zip wget jq
 
-      # Convert Dropbox folder link to API endpoint
-      - name: Prepare Dropbox link
-        id: prep
+      - name: Download Dropbox contents
         run: |
-          # Convert user link to API POST payload
-          FOLDER_URL="${{ github.event.inputs.dropbox_folder }}"
-          # Strip ?dl=1 if present
-          CLEAN_URL="${FOLDER_URL%\?dl=1}"
-          echo "url=$CLEAN_URL" >> $GITHUB_OUTPUT
-
-      # List contents in the folder using Dropbox API
-      - name: List files in Dropbox folder
-        id: list
-        run: |
-          API="https://api.dropboxapi.com/2/sharing/get_shared_link_metadata"
-          DATA="{\"url\": \"${{ steps.prep.outputs.url }}\"}"
-          RESPONSE=$(curl -s -X POST "$API" \
-            --header "Content-Type: application/json" \
-            --data "$DATA")
-
-          # Extract direct download links
-          FILES=$(echo "$RESPONSE" | jq -r '.link_metadata?.path_lower // empty, .path_lower // empty')
-
-          if [ -z "$FILES" ]; then
-            echo "❌ No files found in Dropbox folder"
-            exit 1
-          fi
-
-      # Download all files and separate IPA + image
-      - name: Download files
-        run: |
-          curl -L "${{ github.event.inputs.dropbox_folder }}" -o folder.zip
-          unzip folder.zip -d dropbox_files
-
-          IPA_COUNT=$(ls dropbox_files/*.ipa 2>/dev/null | wc -l)
-          IMG_COUNT=$(ls dropbox_files/*.{png,jpg,jpeg} 2>/dev/null | wc -l)
-
-          if [ "$IPA_COUNT" -ne 1 ]; then
-            echo "❌ Expected exactly 1 IPA, found $IPA_COUNT"
-            exit 1
-          fi
-
-          if [ "$IMG_COUNT" -ne 1 ]; then
-            echo "❌ Expected exactly 1 image (png/jpg), found $IMG_COUNT"
-            exit 1
-          fi
-
-          mv dropbox_files/*.ipa App.ipa
-          mv dropbox_files/*.{png,jpg,jpeg} newicon.png || true
-
-      # Unzip IPA
-      - name: Unzip IPA
-        run: |
-          mkdir extracted
-          unzip App.ipa -d extracted
-
-      # Generate required iOS icons
-      - name: Generate iOS icons
-        run: |
-          mkdir icons
-          convert newicon.png -resize 120x120 icons/AppIcon60x60@2x.png
-          convert newicon.png -resize 180x180 icons/AppIcon60x60@3x.png
-          convert newicon.png -resize 152x152 icons/AppIcon76x76@2x.png
-          convert newicon.png -resize 167x167 icons/AppIcon83.5x83.5@2x.png
-
-      # Replace icons in the app bundle
-      - name: Replace icons
-        run: |
-          cp icons/* extracted/Payload/*.app/
-
-      # Repack IPA
-      - name: Repack IPA
-        run: |
-          cd extracted
-          zip -r ../App-with-new-icon.ipa Payload
+          mkdir input
+          cd input
+          DL_URL="${{ github.event.inputs.dropbox_folder_url }}?dl=1"
+          wget -O dropbox.zip "$DL_URL"
+          unzip dropbox.zip
           cd ..
 
-      # Upload patched IPA
-      - name: Upload patched IPA
-        uses: actions/upload-artifact@v4
+      - name: Find IPA and image
+        run: |
+          cd input
+          IPA=$(ls *.ipa 2>/dev/null || true)
+          IMG=$(ls *.png *.jpg 2>/dev/null || true)
+          if [ -z "$IPA" ] || [ -z "$IMG" ]; then
+            echo "Error: Missing IPA or image"
+            exit 1
+          fi
+          if [ $(ls *.ipa | wc -l) -ne 1 ] || [ $(ls *.png *.jpg | wc -l) -ne 1 ]; then
+            echo "Error: More than one IPA or image found"
+            exit 1
+          fi
+          echo "IPA=$IPA" >> $GITHUB_ENV
+          echo "IMG=$IMG" >> $GITHUB_ENV
+          cd ..
+
+      - name: Extract IPA
+        run: |
+          mkdir work
+          cd work
+          unzip "../input/$IPA"
+
+      - name: Replace icon
+        run: |
+          mkdir icons
+          cp "input/$IMG" icons/newicon.png
+
+          for size in 20 29 40 60 76 83.5 1024; do
+            for scale in 1 2 3; do
+              pixels=$(echo "$size * $scale" | bc | cut -d. -f1)
+              convert icons/newicon.png -resize ${pixels}x${pixels} work/Payload/*/AppIcon${size}x${size}@${scale}x.png || true
+            done
+          done
+
+      - name: Repack IPA
+        run: |
+          cd work
+          zip -r "../modified.ipa" Payload
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
         with:
-          name: Patched-IPA
-          path: App-with-new-icon.ipa
+          tag_name: modified-icon-${{ github.run_number }}
+          name: "Modified IPA Run ${{ github.run_number }}"
+          body: "This release contains the IPA with the replaced app icon."
+          files: modified.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
