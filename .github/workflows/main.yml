@@ -3,12 +3,8 @@ name: Change App Icon
 on:
   workflow_dispatch:
     inputs:
-      ipa_url:
-        description: "Dropbox direct link to the IPA file (must end with ?dl=1)"
-        required: true
-        type: string
-      icon_url:
-        description: "Dropbox direct link to the new app icon (1024x1024 recommended, must end with ?dl=1)"
+      dropbox_folder:
+        description: "Dropbox direct link to a folder (?dl=1)"
         required: true
         type: string
 
@@ -18,25 +14,70 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # Download IPA
-      - name: Download IPA
+      - name: Install dependencies
         run: |
-          curl -L "${{ github.event.inputs.ipa_url }}" -o App.ipa
+          sudo apt-get update
+          sudo apt-get install -y imagemagick jq curl
+
+      # Convert Dropbox folder link to API endpoint
+      - name: Prepare Dropbox link
+        id: prep
+        run: |
+          # Convert user link to API POST payload
+          FOLDER_URL="${{ github.event.inputs.dropbox_folder }}"
+          # Strip ?dl=1 if present
+          CLEAN_URL="${FOLDER_URL%\?dl=1}"
+          echo "url=$CLEAN_URL" >> $GITHUB_OUTPUT
+
+      # List contents in the folder using Dropbox API
+      - name: List files in Dropbox folder
+        id: list
+        run: |
+          API="https://api.dropboxapi.com/2/sharing/get_shared_link_metadata"
+          DATA="{\"url\": \"${{ steps.prep.outputs.url }}\"}"
+          RESPONSE=$(curl -s -X POST "$API" \
+            --header "Content-Type: application/json" \
+            --data "$DATA")
+
+          # Extract direct download links
+          FILES=$(echo "$RESPONSE" | jq -r '.link_metadata?.path_lower // empty, .path_lower // empty')
+
+          if [ -z "$FILES" ]; then
+            echo "❌ No files found in Dropbox folder"
+            exit 1
+          fi
+
+      # Download all files and separate IPA + image
+      - name: Download files
+        run: |
+          curl -L "${{ github.event.inputs.dropbox_folder }}" -o folder.zip
+          unzip folder.zip -d dropbox_files
+
+          IPA_COUNT=$(ls dropbox_files/*.ipa 2>/dev/null | wc -l)
+          IMG_COUNT=$(ls dropbox_files/*.{png,jpg,jpeg} 2>/dev/null | wc -l)
+
+          if [ "$IPA_COUNT" -ne 1 ]; then
+            echo "❌ Expected exactly 1 IPA, found $IPA_COUNT"
+            exit 1
+          fi
+
+          if [ "$IMG_COUNT" -ne 1 ]; then
+            echo "❌ Expected exactly 1 image (png/jpg), found $IMG_COUNT"
+            exit 1
+          fi
+
+          mv dropbox_files/*.ipa App.ipa
+          mv dropbox_files/*.{png,jpg,jpeg} newicon.png || true
+
+      # Unzip IPA
+      - name: Unzip IPA
+        run: |
           mkdir extracted
           unzip App.ipa -d extracted
 
-      # Download new app icon
-      - name: Download new icon
-        run: |
-          curl -L "${{ github.event.inputs.icon_url }}" -o newicon.png
-
-      # Install ImageMagick for resizing
-      - name: Install ImageMagick
-        run: sudo apt-get update && sudo apt-get install -y imagemagick
-
-      # Generate required iOS icon sizes
+      # Generate required iOS icons
       - name: Generate iOS icons
         run: |
           mkdir icons
@@ -44,30 +85,22 @@ jobs:
           convert newicon.png -resize 180x180 icons/AppIcon60x60@3x.png
           convert newicon.png -resize 152x152 icons/AppIcon76x76@2x.png
           convert newicon.png -resize 167x167 icons/AppIcon83.5x83.5@2x.png
-          convert newicon.png -resize 120x120 icons/AppIcon120.png
-          convert newicon.png -resize 76x76 icons/AppIcon76.png
-          convert newicon.png -resize 57x57 icons/AppIcon57.png
-          convert newicon.png -resize 114x114 icons/AppIcon57@2x.png
-          convert newicon.png -resize 40x40 icons/AppIcon40.png
-          convert newicon.png -resize 80x80 icons/AppIcon40@2x.png
-          convert newicon.png -resize 120x120 icons/AppIcon40@3x.png
-          # add more sizes if the app expects them
 
-      # Replace icons inside IPA bundle
+      # Replace icons in the app bundle
       - name: Replace icons
         run: |
           cp icons/* extracted/Payload/*.app/
 
-      # Repack into IPA
+      # Repack IPA
       - name: Repack IPA
         run: |
           cd extracted
           zip -r ../App-with-new-icon.ipa Payload
           cd ..
 
-      # Upload result
+      # Upload patched IPA
       - name: Upload patched IPA
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Patched-IPA
           path: App-with-new-icon.ipa
