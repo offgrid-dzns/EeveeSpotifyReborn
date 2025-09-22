@@ -1,0 +1,49 @@
+name: Change App Icon
+
+on:
+  workflow_dispatch:
+    inputs:
+      dropbox_url:
+        description: "Direct Dropbox URL to your zipped icon set"
+        required: true
+        type: string
+
+jobs:
+  replace-icon:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Unzip original IPA
+      - name: Unzip IPA
+        run: |
+          mkdir extracted
+          unzip App.ipa -d extracted
+
+      # Download new icons from Dropbox
+      - name: Download icons from Dropbox
+        run: |
+          curl -L "${{ github.event.inputs.dropbox_url }}" -o icons.zip
+          unzip icons.zip -d icons
+
+      # Replace app icons (must have same names as originals)
+      - name: Replace icons
+        run: |
+          cp icons/* extracted/Payload/*.app/
+
+      # Repack into IPA
+      - name: Repack IPA
+        run: |
+          cd extracted
+          zip -r ../App-with-new-icon.ipa Payload
+          cd ..
+
+      # Upload result
+      - name: Upload patched IPA
+        uses: actions/upload-artifact@v3
+        with:
+          name: Patched-IPA
+          path: App-with-new-icon.ipa
