@@ -30,8 +30,8 @@ jobs:
 
       - name: Download and Validate IPA
         run: |
-          wget "${{ inputs.ipa_url }}" --no-verbose -O spotify.ipa
-          file_type=$(file --mime-type -b spotify.ipa)
+          wget "${{ inputs.ipa_url }}" --no-verbose -O app.ipa
+          file_type=$(file --mime-type -b app.ipa)
           if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
             echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
             exit 1
@@ -50,14 +50,13 @@ jobs:
         run: |
           mkdir work
           cd work
-          unzip ../spotify.ipa
+          unzip ../app.ipa
           ls -R
           cd ..
 
       - name: Replace App Icon
         run: |
           brew install imagemagick
-
           APP_DIR=$(find work/Payload -type d -name "*.app" | head -n 1)
           echo "App directory: $APP_DIR"
 
@@ -66,7 +65,7 @@ jobs:
             exit 1
           fi
 
-          # Resize provided icon into all standard iOS sizes
+          # Generate resized icons
           for size in 20 29 40 60 76 83.5 1024; do
             for scale in 1 2 3; do
               pixels=$(echo "$size * $scale" | bc | cut -d. -f1)
@@ -76,19 +75,25 @@ jobs:
 
           echo "✅ Replaced app icons."
 
-      - name: Repack IPA
+      - name: Setup ipapatch
+        run: |
+          wget https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.0/ipapatch.macos-arm64
+          sudo mv ipapatch.macos-arm64 /usr/local/bin/ipapatch
+          sudo chmod +x /usr/local/bin/ipapatch
+
+      - name: Repack and Patch IPA
         run: |
           cd work
-          zip -r ../ModifiedApp.ipa Payload
+          zip -r ../App-with-new-icon.ipa Payload
           cd ..
-          ls -lh ModifiedApp.ipa
+          ipapatch -input App-with-new-icon.ipa -output App-with-new-icon-patched.ipa
 
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: icon-${{ github.run_number }}
           name: "IPA with New Icon (${{ github.run_number }})"
-          files: ModifiedApp.ipa
+          files: App-with-new-icon-patched.ipa
           draft: true
 
       - name: Output Release URL
