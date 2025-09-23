@@ -14,30 +14,47 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Setup ipapatch
         run: |
-          brew tap shinh/misc
-          brew install ipapatch
+          wget https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.0/ipapatch.macos-arm64
+          sudo mv ipapatch.macos-arm64 /usr/local/bin/ipapatch
+          sudo chmod +x /usr/local/bin/ipapatch
 
-      - name: Download files from Dropbox
+      - name: Download IPA and Icon
         run: |
           mkdir downloads
           cd downloads
 
-          # Clean Dropbox links (convert ?dl=0 -> ?dl=1 for direct download)
           IPA_URL="${{ github.event.inputs.ipa_url }}"
           ICON_URL="${{ github.event.inputs.icon_url }}"
           IPA_URL="${IPA_URL//dl=0/dl=1}"
           ICON_URL="${ICON_URL//dl=0/dl=1}"
 
-          # Download IPA
-          curl -L "$IPA_URL" -o app.ipa
+          # Download all files in Dropbox folder
+          curl -L "$IPA_URL" -o ipa.zip
+          unzip ipa.zip || true
 
-          # Download Icon
-          curl -L "$ICON_URL" -o newicon.png
+          curl -L "$ICON_URL" -o icon.zip
+          unzip icon.zip || true
+
+          # Validate IPA
+          ipa_count=$(ls *.ipa 2>/dev/null | wc -l | xargs)
+          if [ "$ipa_count" -ne 1 ]; then
+            echo "::error::Dropbox folder must contain exactly 1 IPA, found $ipa_count"
+            exit 1
+          fi
+
+          # Validate Icon
+          img_count=$(ls *.png *.jpg *.jpeg 2>/dev/null | wc -l | xargs || true)
+          if [ "$img_count" -ne 1 ]; then
+            echo "::error::Dropbox folder must contain exactly 1 image (png/jpg), found $img_count"
+            exit 1
+          fi
+
+          mv *.ipa app.ipa
+          mv *.png *.jpg *.jpeg newicon.png || true
 
           cd ..
 
