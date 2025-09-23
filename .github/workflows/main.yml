@@ -3,98 +3,94 @@ name: Change App Icon
 on:
   workflow_dispatch:
     inputs:
-      dropbox_folder_url:
-        description: "Dropbox folder containing one .ipa and one .png/.jpg"
+      ipa_url:
+        description: "Direct URL to the decrypted IPA file"
+        default: ""
         required: true
+        type: string
+      icon_url:
+        description: "Direct URL to the new App Icon (PNG/JPG)"
+        default: ""
+        required: true
+        type: string
 
 jobs:
-  replace-icon:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: macos-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Set up tools
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2.0'
+
+      - name: Hide Sensitive Inputs
+        uses: levibostian/action-hide-sensitive-inputs@v1
+
+      - name: Download and Validate IPA
         run: |
-          sudo apt-get update
-          sudo apt-get install -y imagemagick unzip zip wget jq
-
-      - name: Download Dropbox contents
-        run: |
-          mkdir input
-          cd input
-          DL_URL="${{ github.event.inputs.dropbox_folder_url }}?dl=1"
-          echo "Downloading from: $DL_URL"
-          wget -O dropbox.zip "$DL_URL"
-          unzip -l dropbox.zip
-          unzip dropbox.zip
-          cd ..
-
-      - name: Find IPA and image
-        run: |
-          cd input
-          IPA=$(ls *.ipa 2>/dev/null || true)
-          IMG=$(ls *.png *.jpg 2>/dev/null || true)
-
-          echo "Found IPA: $IPA"
-          echo "Found Image: $IMG"
-
-          if [ -z "$IPA" ] || [ -z "$IMG" ]; then
-            echo "❌ Error: Missing IPA or image"
-            exit 2
+          wget "${{ inputs.ipa_url }}" --no-verbose -O spotify.ipa
+          file_type=$(file --mime-type -b spotify.ipa)
+          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+            echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
+            exit 1
           fi
 
-          if [ $(ls *.ipa | wc -l) -ne 1 ] || [ $(ls *.png *.jpg | wc -l) -ne 1 ]; then
-            echo "❌ Error: More than one IPA or image found"
-            exit 2
+      - name: Download and Validate Icon
+        run: |
+          wget "${{ inputs.icon_url }}" --no-verbose -O newicon
+          file_type=$(file --mime-type -b newicon)
+          if [[ "$file_type" != "image/png" && "$file_type" != "image/jpeg" ]]; then
+            echo "::error::Validation failed: The downloaded file is not a PNG/JPG. Detected type: $file_type."
+            exit 1
           fi
-
-          echo "IPA=$IPA" >> $GITHUB_ENV
-          echo "IMG=$IMG" >> $GITHUB_ENV
-          cd ..
 
       - name: Extract IPA
         run: |
           mkdir work
           cd work
-          unzip "../input/$IPA"
+          unzip ../spotify.ipa
           ls -R
+          cd ..
 
-      - name: Replace icon
+      - name: Replace App Icon
         run: |
-          echo "Scaling new icon: $IMG"
-          mkdir icons
-          cp "input/$IMG" icons/newicon.png
+          brew install imagemagick
 
           APP_DIR=$(find work/Payload -type d -name "*.app" | head -n 1)
           echo "App directory: $APP_DIR"
 
           if [ -z "$APP_DIR" ]; then
-            echo "❌ Error: Could not find .app directory inside IPA"
-            exit 2
+            echo "::error::Could not find .app folder inside IPA"
+            exit 1
           fi
 
+          # Resize provided icon into all standard iOS sizes
           for size in 20 29 40 60 76 83.5 1024; do
             for scale in 1 2 3; do
               pixels=$(echo "$size * $scale" | bc | cut -d. -f1)
-              echo "Generating ${pixels}x${pixels}..."
-              convert icons/newicon.png -resize ${pixels}x${pixels} "$APP_DIR/AppIcon${size}x${size}@${scale}x.png" || true
+              convert newicon -resize ${pixels}x${pixels} "$APP_DIR/AppIcon${size}x${size}@${scale}x.png"
             done
           done
+
+          echo "✅ Replaced app icons."
 
       - name: Repack IPA
         run: |
           cd work
-          zip -r "../modified.ipa" Payload
+          zip -r ../ModifiedApp.ipa Payload
           cd ..
-          ls -lh modified.ipa
+          ls -lh ModifiedApp.ipa
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: modified-icon-${{ github.run_number }}
-          name: "Modified IPA Run ${{ github.run_number }}"
-          body: "This release contains the IPA with the replaced app icon."
-          files: modified.ipa
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: icon-${{ github.run_number }}
+          name: "IPA with New Icon (${{ github.run_number }})"
+          files: ModifiedApp.ipa
+          draft: true
+
+      - name: Output Release URL
+        run: |
+          echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
