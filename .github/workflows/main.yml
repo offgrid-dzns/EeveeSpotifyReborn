@@ -15,7 +15,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
@@ -27,7 +27,7 @@ jobs:
           mkdir downloads
           cd downloads
 
-          # Clean Dropbox link
+          # Clean Dropbox links (convert ?dl=0 -> ?dl=1 for direct download)
           IPA_URL="${{ github.event.inputs.ipa_url }}"
           ICON_URL="${{ github.event.inputs.icon_url }}"
           IPA_URL="${IPA_URL//dl=0/dl=1}"
@@ -50,13 +50,13 @@ jobs:
             -output output/App-with-new-icon.ipa
 
       - name: Upload Patched IPA
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: App-with-new-icon
           path: output/App-with-new-icon.ipa
 
       - name: Release Patched IPA
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: output/App-with-new-icon.ipa
         env:
