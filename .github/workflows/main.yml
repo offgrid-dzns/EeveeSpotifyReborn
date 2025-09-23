@@ -13,12 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup ipapatch
-        run: |
-          wget https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.0/ipapatch.macos-arm64
-          sudo mv ipapatch.macos-arm64 /usr/local/bin/ipapatch
-          sudo chmod +x /usr/local/bin/ipapatch
-
       - name: Install imagemagick
         run: brew install imagemagick
 
@@ -37,7 +31,6 @@ jobs:
           echo "Files found in Dropbox folder:"
           ls -l
 
-          # Validate IPA
           ipa_file=$(ls *.ipa 2>/dev/null | head -n 1)
           ipa_count=$(ls *.ipa 2>/dev/null | wc -l | xargs)
           if [ "$ipa_count" -ne 1 ]; then
@@ -45,7 +38,6 @@ jobs:
             exit 1
           fi
 
-          # Validate Image
           img_file=$(ls *.png *.jpg *.jpeg 2>/dev/null | head -n 1)
           img_count=$(ls *.png *.jpg *.jpeg 2>/dev/null | wc -l | xargs)
           if [ "$img_count" -ne 1 ]; then
@@ -55,6 +47,17 @@ jobs:
 
           mv "$ipa_file" app.ipa
           mv "$img_file" baseicon.png
+
+          cd ..
+
+      - name: Unpack IPA
+        run: |
+          mkdir workdir
+          cd workdir
+          unzip ../downloads/app.ipa
+
+          echo "App content:"
+          ls -l Payload/*.app
 
           cd ..
 
@@ -74,13 +77,25 @@ jobs:
           echo "Generated icons:"
           ls -l icons
 
-      - name: Patch IPA with New Icons
+      - name: Replace Icons
         run: |
+          app_path=$(find workdir/Payload -name "*.app" | head -n 1)
+          echo "Replacing icons inside: $app_path"
+
+          # Remove old app icons
+          rm -f $app_path/AppIcon*.png
+
+          # Copy new ones
+          cp icons/*.png $app_path/
+
+      - name: Repack IPA
+        run: |
+          cd workdir
+          zip -r ../App-with-new-icon.ipa Payload
+          cd ..
+
           mkdir output
-          ipapatch \
-            -input downloads/app.ipa \
-            -replace-icon icons/AppIcon1024x1024@1x.png \
-            -output output/App-with-new-icon.ipa
+          mv App-with-new-icon.ipa output/
 
       - name: Upload Patched IPA
         uses: actions/upload-artifact@v4
