@@ -1,101 +1,63 @@
-name: Change App Icon
+name: Replace App Icon and Patch IPA
 
 on:
   workflow_dispatch:
     inputs:
       ipa_url:
-        description: "Direct URL to the decrypted IPA file"
-        default: ""
+        description: "Dropbox folder link containing the .ipa"
         required: true
-        type: string
       icon_url:
-        description: "Direct URL to the new App Icon (PNG/JPG)"
-        default: ""
+        description: "Dropbox folder link containing the .png or .jpg"
         required: true
-        type: string
 
 jobs:
   build:
     runs-on: macos-latest
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v3
 
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: '16.2.0'
-
-      - name: Hide Sensitive Inputs
-        uses: levibostian/action-hide-sensitive-inputs@v1
-
-      - name: Download and Validate IPA
+      - name: Install dependencies
         run: |
-          wget "${{ inputs.ipa_url }}" --no-verbose -O app.ipa
-          file_type=$(file --mime-type -b app.ipa)
-          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
-            echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
-            exit 1
-          fi
+          brew tap shinh/misc
+          brew install ipapatch
 
-      - name: Download and Validate Icon
+      - name: Download files from Dropbox
         run: |
-          wget "${{ inputs.icon_url }}" --no-verbose -O newicon
-          file_type=$(file --mime-type -b newicon)
-          if [[ "$file_type" != "image/png" && "$file_type" != "image/jpeg" ]]; then
-            echo "::error::Validation failed: The downloaded file is not a PNG/JPG. Detected type: $file_type."
-            exit 1
-          fi
+          mkdir downloads
+          cd downloads
 
-      - name: Extract IPA
-        run: |
-          mkdir work
-          cd work
-          unzip ../app.ipa
-          ls -R
+          # Clean Dropbox link
+          IPA_URL="${{ github.event.inputs.ipa_url }}"
+          ICON_URL="${{ github.event.inputs.icon_url }}"
+          IPA_URL="${IPA_URL//dl=0/dl=1}"
+          ICON_URL="${ICON_URL//dl=0/dl=1}"
+
+          # Download IPA
+          curl -L "$IPA_URL" -o app.ipa
+
+          # Download Icon
+          curl -L "$ICON_URL" -o newicon.png
+
           cd ..
 
-      - name: Replace App Icon
+      - name: Patch IPA with New Icon
         run: |
-          brew install imagemagick
-          APP_DIR=$(find work/Payload -type d -name "*.app" | head -n 1)
-          echo "App directory: $APP_DIR"
+          mkdir output
+          ipapatch \
+            -input downloads/app.ipa \
+            -replace-icon downloads/newicon.png \
+            -output output/App-with-new-icon.ipa
 
-          if [ -z "$APP_DIR" ]; then
-            echo "::error::Could not find .app folder inside IPA"
-            exit 1
-          fi
-
-          # Generate resized icons
-          for size in 20 29 40 60 76 83.5 1024; do
-            for scale in 1 2 3; do
-              pixels=$(echo "$size * $scale" | bc | cut -d. -f1)
-              convert newicon -resize ${pixels}x${pixels} "$APP_DIR/AppIcon${size}x${size}@${scale}x.png"
-            done
-          done
-
-          echo "✅ Replaced app icons."
-
-      - name: Setup ipapatch
-        run: |
-          wget https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.0/ipapatch.macos-arm64
-          sudo mv ipapatch.macos-arm64 /usr/local/bin/ipapatch
-          sudo chmod +x /usr/local/bin/ipapatch
-
-      - name: Repack and Patch IPA
-        run: |
-          cd work
-          zip -r ../App-with-new-icon.ipa Payload
-          cd ..
-          ipapatch -input App-with-new-icon.ipa -output App-with-new-icon-patched.ipa
-
-      - name: Upload to GitHub Releases
-        uses: softprops/action-gh-release@v2
+      - name: Upload Patched IPA
+        uses: actions/upload-artifact@v3
         with:
-          tag_name: icon-${{ github.run_number }}
-          name: "IPA with New Icon (${{ github.run_number }})"
-          files: App-with-new-icon-patched.ipa
-          draft: true
+          name: App-with-new-icon
+          path: output/App-with-new-icon.ipa
 
-      - name: Output Release URL
-        run: |
-          echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
+      - name: Release Patched IPA
+        uses: softprops/action-gh-release@v1
+        with:
+          files: output/App-with-new-icon.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
