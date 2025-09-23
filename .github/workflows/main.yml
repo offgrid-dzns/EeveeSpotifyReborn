@@ -3,11 +3,8 @@ name: Replace App Icon and Patch IPA
 on:
   workflow_dispatch:
     inputs:
-      ipa_url:
-        description: "Dropbox folder link containing the .ipa"
-        required: true
-      icon_url:
-        description: "Dropbox folder link containing the .png or .jpg"
+      dropbox_url:
+        description: "Dropbox folder link containing ONE .ipa and ONE .png/.jpg image"
         required: true
 
 jobs:
@@ -22,48 +19,67 @@ jobs:
           sudo mv ipapatch.macos-arm64 /usr/local/bin/ipapatch
           sudo chmod +x /usr/local/bin/ipapatch
 
-      - name: Download IPA and Icon
+      - name: Install imagemagick
+        run: brew install imagemagick
+
+      - name: Download Dropbox folder
         run: |
           mkdir downloads
           cd downloads
 
-          IPA_URL="${{ github.event.inputs.ipa_url }}"
-          ICON_URL="${{ github.event.inputs.icon_url }}"
-          IPA_URL="${IPA_URL//dl=0/dl=1}"
-          ICON_URL="${ICON_URL//dl=0/dl=1}"
+          URL="${{ github.event.inputs.dropbox_url }}"
+          URL="${URL//dl=0/dl=1}"
 
-          # Download all files in Dropbox folder
-          curl -L "$IPA_URL" -o ipa.zip
-          unzip ipa.zip || true
+          echo "Downloading from: $URL"
+          curl -L "$URL" -o folder.zip
+          unzip -o folder.zip || true
 
-          curl -L "$ICON_URL" -o icon.zip
-          unzip icon.zip || true
+          echo "Files found in Dropbox folder:"
+          ls -l
 
           # Validate IPA
+          ipa_file=$(ls *.ipa 2>/dev/null | head -n 1)
           ipa_count=$(ls *.ipa 2>/dev/null | wc -l | xargs)
           if [ "$ipa_count" -ne 1 ]; then
             echo "::error::Dropbox folder must contain exactly 1 IPA, found $ipa_count"
             exit 1
           fi
 
-          # Validate Icon
-          img_count=$(ls *.png *.jpg *.jpeg 2>/dev/null | wc -l | xargs || true)
+          # Validate Image
+          img_file=$(ls *.png *.jpg *.jpeg 2>/dev/null | head -n 1)
+          img_count=$(ls *.png *.jpg *.jpeg 2>/dev/null | wc -l | xargs)
           if [ "$img_count" -ne 1 ]; then
-            echo "::error::Dropbox folder must contain exactly 1 image (png/jpg), found $img_count"
+            echo "::error::Dropbox folder must contain exactly 1 image (png/jpg/jpeg), found $img_count"
             exit 1
           fi
 
-          mv *.ipa app.ipa
-          mv *.png *.jpg *.jpeg newicon.png || true
+          mv "$ipa_file" app.ipa
+          mv "$img_file" baseicon.png
 
           cd ..
 
-      - name: Patch IPA with New Icon
+      - name: Generate iOS icon sizes
+        run: |
+          mkdir icons
+          sizes=(20 29 40 60 76 83.5 1024)
+          scales=(1 2 3)
+
+          for size in "${sizes[@]}"; do
+            for scale in "${scales[@]}"; do
+              px=$(echo "$size * $scale" | bc | awk '{print int($1)}')
+              convert downloads/baseicon.png -resize ${px}x${px} icons/AppIcon${size}x${size}@${scale}x.png
+            done
+          done
+
+          echo "Generated icons:"
+          ls -l icons
+
+      - name: Patch IPA with New Icons
         run: |
           mkdir output
           ipapatch \
             -input downloads/app.ipa \
-            -replace-icon downloads/newicon.png \
+            -replace-icon icons/AppIcon1024x1024@1x.png \
             -output output/App-with-new-icon.ipa
 
       - name: Upload Patched IPA
