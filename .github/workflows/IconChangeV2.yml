@@ -1,52 +1,111 @@
-name: Create IPA with Custom Icon
+name: Replace App Icon and Patch IPA
 
 on:
   workflow_dispatch:
     inputs:
-      folder_url:
-        description: "URL to folder containing IPA and Icon PNG"
+      dropbox_url:
+        description: "Dropbox folder link containing ONE .ipa and ONE .png/.jpg image"
         required: true
-        type: string
 
 jobs:
   build:
     runs-on: macos-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Make folders
-        run: |
-          mkdir downloads output
+      - name: Install imagemagick
+        run: brew install imagemagick
 
-      - name: Download IPA and Icon
+      - name: Download Dropbox folder
         run: |
-          wget "${{ inputs.folder_url }}/app.ipa" -O downloads/app.ipa
-          wget "${{ inputs.folder_url }}/icon.png" -O downloads/icon.png
+          mkdir downloads
+          cd downloads
+
+          URL="${{ github.event.inputs.dropbox_url }}"
+          URL="${URL//dl=0/dl=1}"
+
+          echo "Downloading from: $URL"
+          curl -L "$URL" -o folder.zip
+          unzip -o folder.zip || true
+
+          echo "Files found in Dropbox folder:"
+          ls -l
+
+          ipa_file=$(ls *.ipa 2>/dev/null | head -n 1)
+          ipa_count=$(ls *.ipa 2>/dev/null | wc -l | xargs)
+          if [ "$ipa_count" -ne 1 ]; then
+            echo "::error::Dropbox folder must contain exactly 1 IPA, found $ipa_count"
+            exit 1
+          fi
+
+          img_file=$(ls *.png *.jpg *.jpeg 2>/dev/null | head -n 1)
+          img_count=$(ls *.png *.jpg *.jpeg 2>/dev/null | wc -l | xargs)
+          if [ "$img_count" -ne 1 ]; then
+            echo "::error::Dropbox folder must contain exactly 1 image (png/jpg/jpeg), found $img_count"
+            exit 1
+          fi
+
+          mv "$ipa_file" app.ipa
+          mv "$img_file" baseicon.png
+
+          cd ..
 
       - name: Unpack IPA
         run: |
-          mkdir downloads/unpacked
-          ditto -xk downloads/app.ipa downloads/unpacked
+          mkdir workdir
+          cd workdir
+          unzip ../downloads/app.ipa
 
-      - name: Replace Icon
+          echo "App content:"
+          ls -l Payload/*.app
+
+          cd ..
+
+      - name: Generate iOS icon sizes
         run: |
-          APP_PATH=$(find downloads/unpacked/Payload -type d -name "*.app" | head -n 1)
-          cp downloads/icon.png "$APP_PATH/AppIcon60x60@2x.png"
-          cp downloads/icon.png "$APP_PATH/AppIcon60x60@3x.png"
-          cp downloads/icon.png "$APP_PATH/AppIcon76x76@2x.png"
-          cp downloads/icon.png "$APP_PATH/AppIcon83.5x83.5@2x.png"
-          cp downloads/icon.png "$APP_PATH/AppIcon1024x1024@1x.png"
+          mkdir icons
+          sizes=(20 29 40 60 76 83.5 1024)
+          scales=(1 2 3)
 
-      - name: Repack IPA without touching signatures
+          for size in "${sizes[@]}"; do
+            for scale in "${scales[@]}"; do
+              px=$(echo "$size * $scale" | bc | awk '{print int($1)}')
+              convert downloads/baseicon.png -resize ${px}x${px} icons/AppIcon${size}x${size}@${scale}x.png
+            done
+          done
+
+          echo "Generated icons:"
+          ls -l icons
+
+      - name: Replace Icons
         run: |
-          cd downloads/unpacked
-          ditto -ck --keepParent . ../../output/App-with-new-icon.ipa
+          app_path=$(find workdir/Payload -name "*.app" | head -n 1)
+          echo "Replacing icons inside: $app_path"
 
-      - name: Upload to GitHub Releases
+          # Remove old app icons
+          rm -f $app_path/AppIcon*.png
+
+          # Copy new ones
+          cp icons/*.png $app_path/
+
+      - name: Repack IPA
+        run: |
+          cd workdir
+          zip -r ../App-with-new-icon.ipa Payload
+          cd ..
+
+          mkdir output
+          mv App-with-new-icon.ipa output/
+
+      - name: Upload Patched IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-with-new-icon
+          path: output/App-with-new-icon.ipa
+
+      - name: Release Patched IPA
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: "App with New Icon (${{ github.run_number }})"
           files: output/App-with-new-icon.ipa
-          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
