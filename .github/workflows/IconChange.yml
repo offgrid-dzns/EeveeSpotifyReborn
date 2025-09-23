@@ -1,0 +1,153 @@
+name: Change iOS App Icon
+
+on:
+workflow_dispatch:
+inputs:
+ipa_url:
+description: “URL to the decrypted IPA file”
+default: “”
+required: true
+type: string
+icon_url:
+description: “URL to the new app icon (PNG/JPG file)”
+default: “”
+required: true
+type: string
+
+jobs:
+build:
+runs-on: macos-latest
+
+```
+steps:
+  - uses: actions/checkout@v4
+
+  - uses: maxim-lobanov/setup-xcode@v1
+    with:
+      xcode-version: '16.2.0'
+
+  - name: Hide Sensitive Inputs
+    uses: levibostian/action-hide-sensitive-inputs@v1
+
+  - name: Download and Validate IPA
+    run: |
+      wget "${{ inputs.ipa_url }}" --no-verbose -O ${{ github.workspace }}/app.ipa
+      file_type=$(file --mime-type -b ${{ github.workspace }}/app.ipa)
+      if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+        echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
+        exit 1
+      fi
+
+  - name: Download and Validate Icon
+    run: |
+      wget "${{ inputs.icon_url }}" --no-verbose -O ${{ github.workspace }}/new_icon.img
+      file_type=$(file --mime-type -b ${{ github.workspace }}/new_icon.img)
+      if [[ "$file_type" != "image/png" && "$file_type" != "image/jpeg" ]]; then
+        echo "::error::Validation failed: The file is not a valid PNG or JPG image. Detected type: $file_type."
+        exit 1
+      fi
+      
+      # Rename to proper extension based on detected type
+      if [[ "$file_type" == "image/png" ]]; then
+        mv ${{ github.workspace }}/new_icon.img ${{ github.workspace }}/new_icon.png
+        echo "ICON_FILE=new_icon.png" >> $GITHUB_ENV
+      else
+        mv ${{ github.workspace }}/new_icon.img ${{ github.workspace }}/new_icon.jpg
+        echo "ICON_FILE=new_icon.jpg" >> $GITHUB_ENV
+      fi
+
+  - name: Install ImageMagick
+    run: |
+      brew install imagemagick
+
+  - name: Extract IPA
+    run: |
+      mkdir -p extracted_app
+      unzip -q app.ipa -d extracted_app/
+      echo "APP_DIR=$(find extracted_app -name "*.app" -type d)" >> $GITHUB_ENV
+
+  - name: Generate Icon Sizes
+    run: |
+      mkdir -p icons
+      
+      # Define required iOS icon sizes
+      declare -a sizes=("29" "40" "58" "60" "80" "87" "120" "152" "167" "180" "1024")
+      
+      for size in "${sizes[@]}"; do
+        magick ${{ env.ICON_FILE }} -resize ${size}x${size} icons/icon_${size}x${size}.png
+      done
+      
+      # Special cases for @2x and @3x naming
+      cp icons/icon_58x58.png icons/icon_29x29@2x.png
+      cp icons/icon_87x87.png icons/icon_29x29@3x.png
+      cp icons/icon_80x80.png icons/icon_40x40@2x.png
+      cp icons/icon_120x120.png icons/icon_40x40@3x.png
+      cp icons/icon_120x120.png icons/icon_60x60@2x.png
+      cp icons/icon_180x180.png icons/icon_60x60@3x.png
+
+  - name: Replace App Icons
+    run: |
+      # Find and backup original icons
+      find "${{ env.APP_DIR }}" -name "*AppIcon*" -o -name "*icon*" -o -name "Icon*" | while read icon_path; do
+        echo "Found existing icon: $icon_path"
+        # Get the filename without path
+        icon_name=$(basename "$icon_path")
+        
+        # Try to match with our generated icons
+        if [[ -f "icons/$icon_name" ]]; then
+          echo "Replacing $icon_path with icons/$icon_name"
+          cp "icons/$icon_name" "$icon_path"
+        else
+          # For generic replacements, use the closest size
+          file_size=$(identify -format "%wx%h" "$icon_path" 2>/dev/null || echo "unknown")
+          echo "Original icon size: $file_size"
+          
+          # Replace with appropriate sized icon based on dimensions
+          case $file_size in
+            "29x29") cp icons/icon_29x29.png "$icon_path" 2>/dev/null || cp icons/icon_29x29.png "$icon_path.png" ;;
+            "58x58") cp icons/icon_58x58.png "$icon_path" 2>/dev/null || cp icons/icon_58x58.png "$icon_path.png" ;;
+            "87x87") cp icons/icon_87x87.png "$icon_path" 2>/dev/null || cp icons/icon_87x87.png "$icon_path.png" ;;
+            "40x40") cp icons/icon_40x40.png "$icon_path" 2>/dev/null || cp icons/icon_40x40.png "$icon_path.png" ;;
+            "80x80") cp icons/icon_80x80.png "$icon_path" 2>/dev/null || cp icons/icon_80x80.png "$icon_path.png" ;;
+            "120x120") cp icons/icon_120x120.png "$icon_path" 2>/dev/null || cp icons/icon_120x120.png "$icon_path.png" ;;
+            "60x60") cp icons/icon_60x60.png "$icon_path" 2>/dev/null || cp icons/icon_60x60.png "$icon_path.png" ;;
+            "180x180") cp icons/icon_180x180.png "$icon_path" 2>/dev/null || cp icons/icon_180x180.png "$icon_path.png" ;;
+            "152x152") cp icons/icon_152x152.png "$icon_path" 2>/dev/null || cp icons/icon_152x152.png "$icon_path.png" ;;
+            "167x167") cp icons/icon_167x167.png "$icon_path" 2>/dev/null || cp icons/icon_167x167.png "$icon_path.png" ;;
+            "1024x1024") cp icons/icon_1024x1024.png "$icon_path" 2>/dev/null || cp icons/icon_1024x1024.png "$icon_path.png" ;;
+            *) 
+              echo "Using default 120x120 icon for unknown size: $file_size"
+              cp icons/icon_120x120.png "$icon_path" 2>/dev/null || cp icons/icon_120x120.png "$icon_path.png"
+              ;;
+          esac
+        fi
+      done
+
+  - name: Update Info.plist if needed
+    run: |
+      # Update the Info.plist to reference our new icons if needed
+      info_plist="${{ env.APP_DIR }}/Info.plist"
+      if [[ -f "$info_plist" ]]; then
+        # This is optional - most apps will work without modifying Info.plist
+        echo "Info.plist found at: $info_plist"
+      fi
+
+  - name: Repackage IPA
+    run: |
+      cd extracted_app
+      zip -r ../app_with_new_icon.ipa .
+      cd ..
+
+  - name: Upload to GitHub Releases
+    uses: softprops/action-gh-release@v2.0.1
+    with:
+      tag_name: icon-change-${{ github.run_number }}
+      name: App with New Icon (${{ github.run_number }})
+      files: |
+        app_with_new_icon.ipa
+      draft: true
+
+  - name: Output Release URL
+    run: |
+      echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
+```
