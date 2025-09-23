@@ -24,10 +24,10 @@ jobs:
           wget "${{ inputs.folder_url }}/app.ipa" -O downloads/app.ipa
           wget "${{ inputs.folder_url }}/icon.png" -O downloads/icon.png
 
-      - name: Unzip IPA
+      - name: Unpack IPA
         run: |
-          cd downloads
-          unzip -q app.ipa -d unpacked
+          mkdir downloads/unpacked
+          ditto -xk downloads/app.ipa downloads/unpacked
 
       - name: Replace Icon
         run: |
@@ -41,7 +41,7 @@ jobs:
       - name: Repack IPA without touching signatures
         run: |
           cd downloads/unpacked
-          zip -qry "../../output/App-with-new-icon.ipa" *
+          ditto -ck --keepParent . ../../output/App-with-new-icon.ipa
 
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
