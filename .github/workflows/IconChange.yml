@@ -1,15 +1,10 @@
-name: Change iOS App Icon
+name: Change iOS App Icon from Dropbox Folder
 
 on:
 workflow_dispatch:
 inputs:
-ipa_url:
-description: “URL to the decrypted IPA file”
-default: “”
-required: true
-type: string
-icon_url:
-description: “URL to the new app icon (PNG/JPG file)”
+dropbox_folder_url:
+description: “Dropbox folder URL containing exactly one .ipa file and one image file”
 default: “”
 required: true
 type: string
@@ -29,42 +24,123 @@ steps:
   - name: Hide Sensitive Inputs
     uses: levibostian/action-hide-sensitive-inputs@v1
 
-  - name: Download and Validate IPA
+  - name: Install Required Tools
     run: |
-      wget "${{ inputs.ipa_url }}" --no-verbose -O ${{ github.workspace }}/app.ipa
-      file_type=$(file --mime-type -b ${{ github.workspace }}/app.ipa)
-      if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
-        echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
-        exit 1
-      fi
+      brew install imagemagick
+      brew install jq
+      brew install curl
 
-  - name: Download and Validate Icon
+  - name: Download and Process Dropbox Folder
     run: |
-      wget "${{ inputs.icon_url }}" --no-verbose -O ${{ github.workspace }}/new_icon.img
-      file_type=$(file --mime-type -b ${{ github.workspace }}/new_icon.img)
-      if [[ "$file_type" != "image/png" && "$file_type" != "image/jpeg" ]]; then
-        echo "::error::Validation failed: The file is not a valid PNG or JPG image. Detected type: $file_type."
+      # Convert shared Dropbox folder URL to API-accessible format
+      folder_url="${{ inputs.dropbox_folder_url }}"
+      
+      # Handle different Dropbox URL formats
+      if [[ "$folder_url" == *"dropbox.com/scl/fo/"* ]]; then
+        # New sharing format: https://www.dropbox.com/scl/fo/xyz/h?rlkey=...&dl=0
+        folder_url=$(echo "$folder_url" | sed 's|dropbox\.com/scl/fo/|dropbox.com/sh/|' | sed 's|/h?|?|' | sed 's|&dl=0|&dl=1|')
+      elif [[ "$folder_url" == *"dropbox.com/sh/"* ]]; then
+        # Old sharing format: https://www.dropbox.com/sh/xyz?dl=0
+        folder_url=$(echo "$folder_url" | sed 's|dl=0|dl=1|')
+      else
+        echo "::error::Invalid Dropbox folder URL format. Please use a valid Dropbox shared folder link."
         exit 1
       fi
       
-      # Rename to proper extension based on detected type
-      if [[ "$file_type" == "image/png" ]]; then
-        mv ${{ github.workspace }}/new_icon.img ${{ github.workspace }}/new_icon.png
+      echo "Processing Dropbox folder: $folder_url"
+      
+      # Download the folder as zip
+      curl -L "$folder_url" -o dropbox_folder.zip
+      
+      # Extract the zip file
+      mkdir -p dropbox_contents
+      unzip -q dropbox_folder.zip -d dropbox_contents/ || {
+        echo "::error::Failed to extract Dropbox folder. Please ensure the link is valid and publicly accessible."
+        exit 1
+      }
+
+  - name: Validate Folder Contents
+    run: |
+      # Find all files in the extracted folder (including subfolders)
+      ipa_files=($(find dropbox_contents -name "*.ipa" -type f))
+      image_files=($(find dropbox_contents -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -type f))
+      
+      echo "Found ${#ipa_files[@]} IPA file(s):"
+      for file in "${ipa_files[@]}"; do
+        echo "  - $(basename "$file")"
+      done
+      
+      echo "Found ${#image_files[@]} image file(s):"
+      for file in "${image_files[@]}"; do
+        echo "  - $(basename "$file")"
+      done
+      
+      # Validate exactly one IPA and one image file
+      if [[ ${#ipa_files[@]} -eq 0 ]]; then
+        echo "::error::No .ipa files found in the Dropbox folder. Please ensure your folder contains exactly one .ipa file."
+        exit 1
+      elif [[ ${#ipa_files[@]} -gt 1 ]]; then
+        echo "::error::Multiple .ipa files found (${#ipa_files[@]}). Please ensure your folder contains exactly one .ipa file."
+        exit 1
+      fi
+      
+      if [[ ${#image_files[@]} -eq 0 ]]; then
+        echo "::error::No image files (.png, .jpg, .jpeg) found in the Dropbox folder. Please ensure your folder contains exactly one image file."
+        exit 1
+      elif [[ ${#image_files[@]} -gt 1 ]]; then
+        echo "::error::Multiple image files found (${#image_files[@]}). Please ensure your folder contains exactly one image file."
+        exit 1
+      fi
+      
+      # Store file paths
+      echo "IPA_FILE=${ipa_files[0]}" >> $GITHUB_ENV
+      echo "IMAGE_FILE=${image_files[0]}" >> $GITHUB_ENV
+      
+      echo "✅ Validation successful!"
+      echo "Using IPA: $(basename "${ipa_files[0]}")"
+      echo "Using Image: $(basename "${image_files[0]}")"
+
+  - name: Validate IPA File
+    run: |
+      file_type=$(file --mime-type -b "${{ env.IPA_FILE }}")
+      if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+        echo "::error::The IPA file is not valid. Detected type: $file_type. Please ensure you're using a valid iOS app file."
+        exit 1
+      fi
+      echo "✅ IPA file validation successful"
+
+  - name: Validate Image File
+    run: |
+      file_type=$(file --mime-type -b "${{ env.IMAGE_FILE }}")
+      if [[ "$file_type" != "image/png" && "$file_type" != "image/jpeg" ]]; then
+        echo "::error::The image file is not valid. Detected type: $file_type. Please use a PNG or JPEG image."
+        exit 1
+      fi
+      echo "✅ Image file validation successful"
+      echo "IMAGE_TYPE=$file_type" >> $GITHUB_ENV
+
+  - name: Prepare Files
+    run: |
+      # Copy files to working directory with standard names
+      cp "${{ env.IPA_FILE }}" app.ipa
+      
+      if [[ "${{ env.IMAGE_TYPE }}" == "image/png" ]]; then
+        cp "${{ env.IMAGE_FILE }}" new_icon.png
         echo "ICON_FILE=new_icon.png" >> $GITHUB_ENV
       else
-        mv ${{ github.workspace }}/new_icon.img ${{ github.workspace }}/new_icon.jpg
+        cp "${{ env.IMAGE_FILE }}" new_icon.jpg
         echo "ICON_FILE=new_icon.jpg" >> $GITHUB_ENV
       fi
-
-  - name: Install ImageMagick
-    run: |
-      brew install imagemagick
+      
+      # Get original filename for the output
+      ipa_basename=$(basename "${{ env.IPA_FILE }}" .ipa)
+      echo "APP_NAME=$ipa_basename" >> $GITHUB_ENV
 
   - name: Extract IPA
     run: |
       mkdir -p extracted_app
       unzip -q app.ipa -d extracted_app/
-      echo "APP_DIR=$(find extracted_app -name "*.app" -type d)" >> $GITHUB_ENV
+      echo "APP_DIR=$(find extracted_app -name "*.app" -type d | head -1)" >> $GITHUB_ENV
 
   - name: Generate Icon Sizes
     run: |
@@ -73,81 +149,123 @@ steps:
       # Define required iOS icon sizes
       declare -a sizes=("29" "40" "58" "60" "80" "87" "120" "152" "167" "180" "1024")
       
+      echo "Generating icon sizes from ${{ env.ICON_FILE }}..."
+      
       for size in "${sizes[@]}"; do
-        magick ${{ env.ICON_FILE }} -resize ${size}x${size} icons/icon_${size}x${size}.png
+        echo "Creating ${size}x${size} icon..."
+        magick "${{ env.ICON_FILE }}" -resize ${size}x${size} icons/icon_${size}x${size}.png
       done
       
-      # Special cases for @2x and @3x naming
+      # Create @2x and @3x naming variants
       cp icons/icon_58x58.png icons/icon_29x29@2x.png
       cp icons/icon_87x87.png icons/icon_29x29@3x.png
       cp icons/icon_80x80.png icons/icon_40x40@2x.png
       cp icons/icon_120x120.png icons/icon_40x40@3x.png
       cp icons/icon_120x120.png icons/icon_60x60@2x.png
       cp icons/icon_180x180.png icons/icon_60x60@3x.png
+      
+      echo "✅ Generated all required icon sizes"
 
   - name: Replace App Icons
     run: |
-      # Find and backup original icons
-      find "${{ env.APP_DIR }}" -name "*AppIcon*" -o -name "*icon*" -o -name "Icon*" | while read icon_path; do
-        echo "Found existing icon: $icon_path"
-        # Get the filename without path
+      echo "Searching for existing icons in: ${{ env.APP_DIR }}"
+      
+      # Find and replace all icon files
+      icon_count=0
+      find "${{ env.APP_DIR }}" -type f \( -name "*AppIcon*" -o -name "*icon*" -o -name "Icon*" -o -name "*.png" \) | while read icon_path; do
+        # Skip if it's not actually an image file
+        if ! file "$icon_path" | grep -q "image\|PNG\|JPEG"; then
+          continue
+        fi
+        
+        echo "Processing: $icon_path"
+        icon_count=$((icon_count + 1))
+        
+        # Get the filename and try to determine size
         icon_name=$(basename "$icon_path")
         
-        # Try to match with our generated icons
+        # Check if we have a direct match
         if [[ -f "icons/$icon_name" ]]; then
-          echo "Replacing $icon_path with icons/$icon_name"
+          echo "  → Replacing with exact match: icons/$icon_name"
           cp "icons/$icon_name" "$icon_path"
-        else
-          # For generic replacements, use the closest size
-          file_size=$(identify -format "%wx%h" "$icon_path" 2>/dev/null || echo "unknown")
-          echo "Original icon size: $file_size"
-          
-          # Replace with appropriate sized icon based on dimensions
-          case $file_size in
-            "29x29") cp icons/icon_29x29.png "$icon_path" 2>/dev/null || cp icons/icon_29x29.png "$icon_path.png" ;;
-            "58x58") cp icons/icon_58x58.png "$icon_path" 2>/dev/null || cp icons/icon_58x58.png "$icon_path.png" ;;
-            "87x87") cp icons/icon_87x87.png "$icon_path" 2>/dev/null || cp icons/icon_87x87.png "$icon_path.png" ;;
-            "40x40") cp icons/icon_40x40.png "$icon_path" 2>/dev/null || cp icons/icon_40x40.png "$icon_path.png" ;;
-            "80x80") cp icons/icon_80x80.png "$icon_path" 2>/dev/null || cp icons/icon_80x80.png "$icon_path.png" ;;
-            "120x120") cp icons/icon_120x120.png "$icon_path" 2>/dev/null || cp icons/icon_120x120.png "$icon_path.png" ;;
-            "60x60") cp icons/icon_60x60.png "$icon_path" 2>/dev/null || cp icons/icon_60x60.png "$icon_path.png" ;;
-            "180x180") cp icons/icon_180x180.png "$icon_path" 2>/dev/null || cp icons/icon_180x180.png "$icon_path.png" ;;
-            "152x152") cp icons/icon_152x152.png "$icon_path" 2>/dev/null || cp icons/icon_152x152.png "$icon_path.png" ;;
-            "167x167") cp icons/icon_167x167.png "$icon_path" 2>/dev/null || cp icons/icon_167x167.png "$icon_path.png" ;;
-            "1024x1024") cp icons/icon_1024x1024.png "$icon_path" 2>/dev/null || cp icons/icon_1024x1024.png "$icon_path.png" ;;
-            *) 
-              echo "Using default 120x120 icon for unknown size: $file_size"
-              cp icons/icon_120x120.png "$icon_path" 2>/dev/null || cp icons/icon_120x120.png "$icon_path.png"
-              ;;
-          esac
+          continue
         fi
+        
+        # Try to determine size from the existing file
+        dimensions=$(identify -format "%wx%h" "$icon_path" 2>/dev/null || echo "unknown")
+        echo "  → Original dimensions: $dimensions"
+        
+        # Replace with appropriate sized icon
+        case $dimensions in
+          "29x29") cp icons/icon_29x29.png "$icon_path" ;;
+          "58x58") cp icons/icon_58x58.png "$icon_path" ;;
+          "87x87") cp icons/icon_87x87.png "$icon_path" ;;
+          "40x40") cp icons/icon_40x40.png "$icon_path" ;;
+          "80x80") cp icons/icon_80x80.png "$icon_path" ;;
+          "120x120") cp icons/icon_120x120.png "$icon_path" ;;
+          "60x60") cp icons/icon_60x60.png "$icon_path" ;;
+          "180x180") cp icons/icon_180x180.png "$icon_path" ;;
+          "152x152") cp icons/icon_152x152.png "$icon_path" ;;
+          "167x167") cp icons/icon_167x167.png "$icon_path" ;;
+          "1024x1024") cp icons/icon_1024x1024.png "$icon_path" ;;
+          *)
+            echo "  → Using default 120x120 for unknown size"
+            cp icons/icon_120x120.png "$icon_path"
+            ;;
+        esac
+        
+        echo "  ✅ Replaced successfully"
       done
-
-  - name: Update Info.plist if needed
-    run: |
-      # Update the Info.plist to reference our new icons if needed
-      info_plist="${{ env.APP_DIR }}/Info.plist"
-      if [[ -f "$info_plist" ]]; then
-        # This is optional - most apps will work without modifying Info.plist
-        echo "Info.plist found at: $info_plist"
-      fi
+      
+      echo "✅ Icon replacement completed"
 
   - name: Repackage IPA
     run: |
+      echo "Repackaging IPA..."
       cd extracted_app
-      zip -r ../app_with_new_icon.ipa .
+      zip -r "../${{ env.APP_NAME }}_with_new_icon.ipa" . -q
       cd ..
+      
+      # Verify the new IPA was created
+      if [[ -f "${{ env.APP_NAME }}_with_new_icon.ipa" ]]; then
+        file_size=$(stat -f%z "${{ env.APP_NAME }}_with_new_icon.ipa" 2>/dev/null || stat -c%s "${{ env.APP_NAME }}_with_new_icon.ipa" 2>/dev/null)
+        echo "✅ New IPA created successfully ($(numfmt --to=iec-i --suffix=B $file_size))"
+      else
+        echo "::error::Failed to create new IPA file"
+        exit 1
+      fi
 
   - name: Upload to GitHub Releases
     uses: softprops/action-gh-release@v2.0.1
     with:
       tag_name: icon-change-${{ github.run_number }}
-      name: App with New Icon (${{ github.run_number }})
+      name: "${{ env.APP_NAME }} with New Icon (Build ${{ github.run_number }})"
+      body: |
+        🎨 **App Icon Changed Successfully!**
+        
+        **Original App:** `${{ env.APP_NAME }}.ipa`
+        **New Icon:** `$(basename "${{ env.IMAGE_FILE }}")`
+        **Build Number:** ${{ github.run_number }}
+        **Created:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        
+        The app icon has been successfully replaced. Install the IPA file below on your iOS device.
+        
+        ---
+        *This release was automatically generated by the Icon Replacement Workflow.*
       files: |
-        app_with_new_icon.ipa
-      draft: true
+        ${{ env.APP_NAME }}_with_new_icon.ipa
+      draft: false
+      prerelease: false
 
-  - name: Output Release URL
+  - name: Output Success Message
     run: |
-      echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
+      echo "🎉 SUCCESS! Your app with the new icon has been created."
+      echo ""
+      echo "📱 Original App: ${{ env.APP_NAME }}.ipa"
+      echo "🎨 New Icon: $(basename "${{ env.IMAGE_FILE }}")"
+      echo "📦 Output File: ${{ env.APP_NAME }}_with_new_icon.ipa"
+      echo ""
+      echo "🔗 Download from: https://github.com/${{ github.repository }}/releases/tag/icon-change-${{ github.run_number }}"
+      echo ""
+      echo "::notice::✅ Icon replacement completed successfully! Check the Releases section to download your modified app."
 ```
